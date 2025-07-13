@@ -817,32 +817,8 @@ def main() -> None:
         print("🤖 Maa Kaali Creations Bot is starting...")
         print("📱 Bot is now running. Press Ctrl+C to stop.")
         
-        # Get port from environment
-        port = int(os.getenv("PORT", 8080))
-        
-        # Try polling first, if it fails, use webhook
-        try:
-            # Run the bot until the user presses Ctrl-C
-            application.run_polling(allowed_updates=Update.ALL_TYPES)
-        except Exception as e:
-            if "Conflict" in str(e):
-                print("⚠️ Polling conflict detected. Switching to webhook mode...")
-                # Use webhook as fallback
-                webhook_url = os.getenv("WEBHOOK_URL", "")
-                if webhook_url:
-                    application.run_webhook(
-                        listen="0.0.0.0",
-                        port=port,
-                        webhook_url=webhook_url
-                    )
-                else:
-                    print("⚠️ No WEBHOOK_URL set, using polling with retry...")
-                    # Retry polling after a delay
-                    import time
-                    time.sleep(5)
-                    application.run_polling(allowed_updates=Update.ALL_TYPES)
-            else:
-                raise e
+        # Simple polling approach for Render
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
         
     except Exception as e:
         print(f"❌ Error starting bot: {e}")

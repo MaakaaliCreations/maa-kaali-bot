@@ -7,14 +7,12 @@ A fully functional bot for the Maa Kaali Creations Shopify store
 import os
 import logging
 import requests
+import re
 from typing import Dict, List, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-<<<<<<< HEAD
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-=======
->>>>>>> 269b789d4fc37c25a85f6f71f1336e0e327253b4
 
 # =============================================================================
 # CONFIGURATION
@@ -51,6 +49,11 @@ CONTACT_INFO = {
 # Brand Logo (Unicode representation)
 BRAND_LOGO = "🪔"  # Diya/light emoji representing Maa Kaali
 
+# Security Configuration
+MAX_MESSAGE_LENGTH = 1000  # Maximum length for user messages
+MAX_QUESTIONS_PER_HOUR = 5  # Rate limiting for questions
+BLOCKED_WORDS = ['spam', 'advertisement', 'promote']  # Words to filter out
+
 # =============================================================================
 # LOGGING SETUP
 # =============================================================================
@@ -60,6 +63,55 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# SECURITY FUNCTIONS
+# =============================================================================
+
+def sanitize_input(text: str) -> str:
+    """Sanitize user input to prevent injection attacks"""
+    if not text:
+        return ""
+    
+    # Remove potentially dangerous characters
+    text = re.sub(r'[<>"\']', '', text)
+    
+    # Limit length
+    if len(text) > MAX_MESSAGE_LENGTH:
+        text = text[:MAX_MESSAGE_LENGTH]
+    
+    return text.strip()
+
+def contains_blocked_words(text: str) -> bool:
+    """Check if text contains blocked words"""
+    text_lower = text.lower()
+    return any(word in text_lower for word in BLOCKED_WORDS)
+
+def is_valid_user(user) -> bool:
+    """Validate if user is legitimate"""
+    if not user:
+        return False
+    
+    # Check if user has a username (optional but good practice)
+    if not user.username and not user.first_name:
+        return False
+    
+    return True
+
+def rate_limit_check(user_id: int, context) -> bool:
+    """Check if user has exceeded rate limits"""
+    current_time = context.bot_data.get('rate_limits', {}).get(str(user_id), 0)
+    import time
+    
+    if time.time() - current_time < 3600:  # 1 hour
+        return False
+    
+    # Update rate limit
+    if 'rate_limits' not in context.bot_data:
+        context.bot_data['rate_limits'] = {}
+    context.bot_data['rate_limits'][str(user_id)] = time.time()
+    
+    return True
 
 # =============================================================================
 # SHOPIFY API FUNCTIONS
@@ -91,7 +143,7 @@ def fetch_products(limit: int = 5, collection_id: Optional[str] = None, tag: Opt
         elif tag:
             params['tag'] = tag
             
-        response = requests.get(url, headers=get_shopify_headers(), params=params)
+        response = requests.get(url, headers=get_shopify_headers(), params=params, timeout=10)
         response.raise_for_status()
         
         data = response.json()
@@ -104,7 +156,7 @@ def fetch_collections() -> List[Dict]:
     """Fetch collections from Shopify API"""
     try:
         url = get_shopify_api_url("collections.json")
-        response = requests.get(url, headers=get_shopify_headers())
+        response = requests.get(url, headers=get_shopify_headers(), timeout=10)
         response.raise_for_status()
         
         data = response.json()
@@ -118,7 +170,7 @@ def fetch_blog_articles(blog_id: str = "1", limit: int = 3) -> List[Dict]:
     try:
         url = get_shopify_api_url(f"blogs/{blog_id}/articles.json")
         params = {'limit': limit}
-        response = requests.get(url, headers=get_shopify_headers(), params=params)
+        response = requests.get(url, headers=get_shopify_headers(), params=params, timeout=10)
         response.raise_for_status()
         
         data = response.json()
@@ -203,25 +255,40 @@ def format_blog_message(article: Dict) -> str:
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /start command"""
-    # Send logo image with description
-    with open('logo.png', 'rb') as logo_file:
-        await update.message.reply_photo(
-            photo=logo_file,
-            caption=(
-                f"{BRAND_LOGO} *Welcome to Maa Kaali Creations!* 🎉\n\n"
-                "🌟 *Discover the beauty of traditional Indian sarees*\n\n"
-                "✨ We offer a stunning collection of:\n"
-                "• Designer Silk Sarees\n"
-                "• Embroidered Net Sarees\n"
-                "• Digital Printed Crepe Sarees\n"
-                "• Kanjeevaram Silk Sarees\n"
-                "• Twill Net Sarees with Sequin Work\n\n"
-                "🛍 *Shop with confidence:*\n"
-                "• Free shipping on all over India\n"
-                "• Easy returns and exchanges\n"
-                "• 24/7 customer support\n"
-                "• Secure payment options\n\n"
-            ),
+    # Validate user
+    if not is_valid_user(update.message.from_user):
+        await update.message.reply_text("❌ Invalid user. Please try again.")
+        return
+    
+    # Send welcome message with logo
+    welcome_message = (
+        f"{BRAND_LOGO} *Welcome to Maa Kaali Creations!* 🎉\n\n"
+        "🌟 *Discover the beauty of traditional Indian sarees*\n\n"
+        "✨ We offer a stunning collection of:\n"
+        "• Designer Silk Sarees\n"
+        "• Embroidered Net Sarees\n"
+        "• Digital Printed Crepe Sarees\n"
+        "• Kanjeevaram Silk Sarees\n"
+        "• Twill Net Sarees with Sequin Work\n\n"
+        "🛍 *Shop with confidence:*\n"
+        "• Free shipping on all over India\n"
+        "• Easy returns and exchanges\n"
+        "• 24/7 customer support\n"
+        "• Secure payment options\n\n"
+    )
+    
+    # Try to send logo image if it exists
+    try:
+        with open('logo.png', 'rb') as logo_file:
+            await update.message.reply_photo(
+                photo=logo_file,
+                caption=welcome_message,
+                parse_mode='Markdown'
+            )
+    except FileNotFoundError:
+        # If logo file doesn't exist, just send the welcome message
+        await update.message.reply_text(
+            welcome_message,
             parse_mode='Markdown'
         )
     
@@ -233,6 +300,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /help command"""
+    # Validate user
+    if not is_valid_user(update.message.from_user):
+        await update.message.reply_text("❌ Invalid user. Please try again.")
+        return
+    
     help_message = (
         f"{BRAND_LOGO} *Maa Kaali Creations Bot Help* 📚\n\n"
         "*Available Commands:*\n"
@@ -262,7 +334,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle callback queries from inline keyboards"""
     query = update.callback_query
-<<<<<<< HEAD
+    
+    # Validate user
+    if not is_valid_user(query.from_user):
+        await query.answer("❌ Invalid user. Please try again.")
+        return
     
     # Add error handling for old callback queries
     try:
@@ -275,9 +351,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             logger.error(f"Error answering callback query: {e}")
             return
-=======
-    await query.answer()
->>>>>>> 269b789d4fc37c25a85f6f71f1336e0e327253b4
     
     if query.data == "back_to_menu":
         await show_main_menu(query)
@@ -288,7 +361,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif query.data == "place_order":
         await place_order(query)
     elif query.data == "ask_question":
-        await ask_question(query)
+        await ask_question(query, context)
     elif query.data == "view_blogs":
         await view_blogs(query)
     elif query.data == "contact_us":
@@ -403,8 +476,6 @@ def get_default_offers_message() -> str:
         f"*Shop now:* {ALL_PRODUCTS_URL}"
     )
 
-
-
 async def place_order(query) -> None:
     """Handle place order request"""
     message = (
@@ -425,8 +496,21 @@ async def place_order(query) -> None:
         parse_mode='Markdown'
     )
 
-async def ask_question(query) -> None:
+async def ask_question(query, context) -> None:
     """Handle ask question request"""
+    # Check rate limiting
+    if not rate_limit_check(query.from_user.id, context):
+        await query.edit_message_text(
+            f"{BRAND_LOGO} *⚠️ Rate Limit Exceeded*\n\n"
+            "You've asked too many questions recently. Please wait a bit before asking another question.",
+            reply_markup=create_back_to_menu_keyboard(),
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Set user state to waiting for question
+    context.user_data['waiting_for_question'] = True
+    
     message = (
         f"{BRAND_LOGO} *❓ Ask a Question*\n\n"
         "Have a question about our products or services?\n\n"
@@ -437,7 +521,9 @@ async def ask_question(query) -> None:
         "• Shipping and delivery\n"
         "• Returns and exchanges\n"
         "• Payment options\n"
-        "• Any other queries"
+        "• Any other queries\n\n"
+        "💡 *Just type your question in the chat below!*\n\n"
+        "⚠️ *Note:* Please be respectful and avoid spam."
     )
     
     await query.edit_message_text(
@@ -544,16 +630,45 @@ async def follow_us(query) -> None:
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle text messages from users"""
+    # Validate user
+    if not is_valid_user(update.message.from_user):
+        await update.message.reply_text("❌ Invalid user. Please try again.")
+        return
+    
     user = update.message.from_user
     text = update.message.text
     
+    # Sanitize input
+    sanitized_text = sanitize_input(text)
+    
+    # Check for blocked words
+    if contains_blocked_words(sanitized_text):
+        await update.message.reply_text(
+            f"{BRAND_LOGO} *⚠️ Message Blocked*\n\n"
+            "Your message contains inappropriate content. Please be respectful.",
+            reply_markup=create_back_to_menu_keyboard(),
+            parse_mode='Markdown'
+        )
+        return
+    
     # Check if user is waiting for a question
     if context.user_data.get('waiting_for_question'):
+        # Check rate limiting
+        if not rate_limit_check(user.id, context):
+            await update.message.reply_text(
+                f"{BRAND_LOGO} *⚠️ Rate Limit Exceeded*\n\n"
+                "You've asked too many questions recently. Please wait a bit before asking another question.",
+                reply_markup=create_back_to_menu_keyboard(),
+                parse_mode='Markdown'
+            )
+            context.user_data.pop('waiting_for_question', None)
+            return
+        
         admin_message = (
             f"{BRAND_LOGO} *❓ New Question from User*\n\n"
             f"*User:* {user.first_name} (@{user.username})\n"
             f"*User ID:* {user.id}\n"
-            f"*Question:* {text}"
+            f"*Question:* {sanitized_text}"
         )
         
         # Send to admin
@@ -591,7 +706,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"{BRAND_LOGO} *📦 Order Tracking Request*\n\n"
             f"*User:* {user.first_name} (@{user.username})\n"
             f"*User ID:* {user.id}\n"
-            f"*Order Number:* {text}"
+            f"*Order Number:* {sanitized_text}"
         )
         
         # Send to admin
@@ -632,7 +747,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 # =============================================================================
-<<<<<<< HEAD
 # HEALTH CHECK SERVER
 # =============================================================================
 
@@ -663,14 +777,11 @@ def start_health_server():
         print(f"⚠️ Health server error: {e}")
 
 # =============================================================================
-=======
->>>>>>> 269b789d4fc37c25a85f6f71f1336e0e327253b4
 # MAIN APPLICATION SETUP
 # =============================================================================
 
 def main() -> None:
     """Start the bot"""
-<<<<<<< HEAD
     # Validate environment variables
     if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         print("❌ Error: BOT_TOKEN not set. Please set the BOT_TOKEN environment variable.")
@@ -736,27 +847,6 @@ def main() -> None:
     except Exception as e:
         print(f"❌ Error starting bot: {e}")
         print("Please check your environment variables and try again.")
-=======
-    # Create the Application
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Add command handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    
-    # Add callback query handler
-    application.add_handler(CallbackQueryHandler(handle_callback_query))
-    
-    # Add message handler for text messages
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-    
-    # Start the bot
-    print("🤖 Maa Kaali Creations Bot is starting...")
-    print("📱 Bot is now running. Press Ctrl+C to stop.")
-    
-    # Run the bot until the user presses Ctrl-C
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
->>>>>>> 269b789d4fc37c25a85f6f71f1336e0e327253b4
 
 if __name__ == '__main__':
     main() 
